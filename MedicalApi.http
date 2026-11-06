@@ -1,0 +1,37 @@
+@MedicalApi_HostAddress = http://localhost:5138
+
+### Список пациентов
+GET {{MedicalApi_HostAddress}}/api/patients
+
+### Добавить пациента
+POST {{MedicalApi_HostAddress}}/api/patients
+Content-Type: application/json
+
+{
+  "name": "Тестовый пациент",
+  "birthDate": "2001-04-12",
+  "phone": "+996700000000",
+  "email": "test@example.com",
+  "bloodType": "B+"
+}
+
+### Список каталога справок
+GET {{MedicalApi_HostAddress}}/api/spravkatypes
+
+### Справки пациента 1
+GET {{MedicalApi_HostAddress}}/api/spravki?patientId=1
+
+### Создать справку для пациента 1 по виду 2
+POST {{MedicalApi_HostAddress}}/api/spravki
+Content-Type: application/json
+
+{
+  "patientId": 1,
+  "spravkaTypeId": 2
+}
+
+### Список справок по убыванию цены
+GET {{MedicalApi_HostAddress}}/api/spravki?sortBy=price&order=desc
+
+### Список записей на приём
+GET {{MedicalApi_HostAddress}}/api/appointments
