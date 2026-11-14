@@ -10,7 +10,7 @@ public class Patient
     [StringLength(100, MinimumLength = 2, ErrorMessage = "Имя должно содержать от 2 до 100 символов.")]
     public string Name { get; set; } = string.Empty;
 
-    public DateTime BirthDate { get; set; }
+    public DateOnly BirthDate { get; set; }
 
     [Phone(ErrorMessage = "Укажите телефон в корректном формате.")]
     public string? Phone { get; set; }

@@ -1,50 +1,74 @@
 using MedicalApi.Data;
 using MedicalApi.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace MedicalApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class PatientsController : ControllerBase
+public class PatientsController(MedicalDbContext db) : ControllerBase
 {
     [HttpGet]
-    public ActionResult<IEnumerable<Patient>> GetAll() => Ok(ClinicData.Patients);
+    public async Task<ActionResult<IEnumerable<Patient>>> GetAll(string? name, CancellationToken cancellationToken)
+    {
+        var query = db.Patients.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            var escapedName = name.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+            var pattern = $"%{escapedName}%";
+            query = query.Where(patient => EF.Functions.ILike(patient.Name, pattern, "\\"));
+        }
+
+        return Ok(await query.OrderBy(patient => patient.Name).ThenBy(patient => patient.Id)
+            .ToListAsync(cancellationToken));
+    }
 
     [HttpGet("{id:int}")]
-    public ActionResult<Patient> GetById(int id)
+    public async Task<ActionResult<Patient>> GetById(int id, CancellationToken cancellationToken)
     {
-        var patient = ClinicData.Patients.FirstOrDefault(item => item.Id == id);
+        var patient = await db.Patients.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
         return patient is null ? NotFound() : Ok(patient);
     }
 
     [HttpGet("{id:int}/spravki")]
-    public ActionResult<IEnumerable<Spravka>> GetPatientSpravki(int id)
+    public async Task<ActionResult<IEnumerable<Spravka>>> GetPatientSpravki(int id, CancellationToken cancellationToken)
     {
-        if (!ClinicData.Patients.Any(item => item.Id == id))
+        if (!await db.Patients.AnyAsync(item => item.Id == id, cancellationToken))
             return NotFound(new { message = $"Пациент с Id {id} не найден." });
 
-        return Ok(ClinicData.Spravki.Where(item => item.PatientId == id).ToList());
+        var certificates = await db.Spravki.AsNoTracking().Where(item => item.PatientId == id)
+            .OrderBy(item => item.Id).ToListAsync(cancellationToken);
+        return Ok(certificates);
     }
 
     [HttpPost]
-    public ActionResult<Patient> Create(Patient patient)
+    public async Task<ActionResult<Patient>> Create(PatientRequest input, CancellationToken cancellationToken)
     {
-        if (patient.BirthDate == default || patient.BirthDate.Date > DateTime.Today)
+        if (input.BirthDate == default || input.BirthDate > DateOnly.FromDateTime(DateTime.Today))
             return BadRequest(new { message = "Дата рождения не может быть пустой или находиться в будущем." });
 
-        patient.Id = ClinicData.NextPatientId();
-        ClinicData.Patients.Add(patient);
+        var patient = new Patient
+        {
+            Name = input.Name,
+            BirthDate = input.BirthDate,
+            Phone = input.Phone,
+            Email = input.Email,
+            BloodType = input.BloodType
+        };
+        db.Patients.Add(patient);
+        await db.SaveChangesAsync(cancellationToken);
         return CreatedAtAction(nameof(GetById), new { id = patient.Id }, patient);
     }
 
     [HttpPut("{id:int}")]
-    public ActionResult<Patient> Update(int id, Patient input)
+    public async Task<ActionResult<Patient>> Update(int id, PatientRequest input, CancellationToken cancellationToken)
     {
-        var patient = ClinicData.Patients.FirstOrDefault(item => item.Id == id);
+        var patient = await db.Patients.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (patient is null)
             return NotFound(new { message = $"Пациент с Id {id} не найден." });
-        if (input.BirthDate == default || input.BirthDate.Date > DateTime.Today)
+        if (input.BirthDate == default || input.BirthDate > DateOnly.FromDateTime(DateTime.Today))
             return BadRequest(new { message = "Дата рождения не может быть пустой или находиться в будущем." });
 
         patient.Name = input.Name;
@@ -52,19 +76,47 @@ public class PatientsController : ControllerBase
         patient.Phone = input.Phone;
         patient.Email = input.Email;
         patient.BloodType = input.BloodType;
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return NotFound(new { message = $"Пациент с Id {id} не найден." });
+        }
+
         return Ok(patient);
     }
 
     [HttpDelete("{id:int}")]
-    public IActionResult Delete(int id)
+    public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
-        var patient = ClinicData.Patients.FirstOrDefault(item => item.Id == id);
+        var patient = await db.Patients.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (patient is null)
             return NotFound(new { message = $"Пациент с Id {id} не найден." });
 
-        ClinicData.Patients.Remove(patient);
-        ClinicData.Spravki.RemoveAll(item => item.PatientId == id);
-        ClinicData.Appointments.RemoveAll(item => item.PatientId == id);
+        var restriction = new { message = "Нельзя удалить пациента, пока у него есть выданные справки." };
+        if (await db.Spravki.AnyAsync(item => item.PatientId == id, cancellationToken))
+            return BadRequest(restriction);
+
+        db.Patients.Remove(patient);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return NotFound(new { message = $"Пациент с Id {id} не найден." });
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException
+            {
+                SqlState: PostgresErrorCodes.ForeignKeyViolation,
+                ConstraintName: "FK_Spravki_Patients_PatientId"
+            })
+        {
+            return BadRequest(restriction);
+        }
+
         return NoContent();
     }
 }

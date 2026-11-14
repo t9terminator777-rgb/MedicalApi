@@ -8,5 +8,5 @@ public class Spravka
     public int SpravkaTypeId { get; set; }
     public string Name { get; set; } = string.Empty;
     public decimal Price { get; set; }
-    public DateTime IssuedAt { get; set; }
+    public DateOnly IssuedAt { get; set; }
 }

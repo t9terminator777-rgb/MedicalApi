@@ -1,4 +1,4 @@
-@MedicalApi_HostAddress = http://localhost:5138
+@MedicalApi_HostAddress = http://localhost:5046
 
 ### Список пациентов
 GET {{MedicalApi_HostAddress}}/api/patients

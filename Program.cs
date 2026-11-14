@@ -1,8 +1,10 @@
 using MedicalApi.Data;
-using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddDbContext<MedicalDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("Medical")));
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

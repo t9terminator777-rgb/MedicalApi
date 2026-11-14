@@ -1,106 +1,145 @@
 using MedicalApi.Data;
 using MedicalApi.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace MedicalApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class SpravkiController : ControllerBase
+public class SpravkiController(MedicalDbContext db) : ControllerBase
 {
-    // Можно отфильтровать по пациенту или части названия и отсортировать по цене/дате.
     [HttpGet]
-    public ActionResult<IEnumerable<Spravka>> GetAll(
+    public async Task<ActionResult<IEnumerable<Spravka>>> GetAll(
         [FromQuery] int? patientId,
         [FromQuery] string? search,
         [FromQuery] string? sortBy,
+        [FromQuery] string? sort,
+        [FromQuery] decimal? minPrice,
+        CancellationToken cancellationToken,
         [FromQuery] string? order = "asc")
     {
-        IEnumerable<Spravka> result = ClinicData.Spravki;
+        var query = db.Spravki.AsNoTracking();
         if (patientId.HasValue)
-            result = result.Where(item => item.PatientId == patientId.Value);
+            query = query.Where(item => item.PatientId == patientId.Value);
+        if (minPrice.HasValue)
+            query = query.Where(item => item.Price >= minPrice.Value);
         if (!string.IsNullOrWhiteSpace(search))
-            result = result.Where(item => item.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
+        {
+            var escapedSearch = search.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+            var pattern = $"%{escapedSearch}%";
+            query = query.Where(item => EF.Functions.ILike(item.Name, pattern, "\\"));
+        }
 
         var descending = string.Equals(order, "desc", StringComparison.OrdinalIgnoreCase);
-        result = (sortBy ?? "id").ToLowerInvariant() switch
+        query = (sortBy ?? sort ?? "id").ToLowerInvariant() switch
         {
-            "price" => descending ? result.OrderByDescending(item => item.Price) : result.OrderBy(item => item.Price),
-            "date" => descending ? result.OrderByDescending(item => item.IssuedAt) : result.OrderBy(item => item.IssuedAt),
-            _ => descending ? result.OrderByDescending(item => item.Id) : result.OrderBy(item => item.Id)
+            "price" => (descending ? query.OrderByDescending(item => item.Price) : query.OrderBy(item => item.Price))
+                .ThenBy(item => item.Id),
+            "date" => (descending ? query.OrderByDescending(item => item.IssuedAt) : query.OrderBy(item => item.IssuedAt))
+                .ThenBy(item => item.Id),
+            _ => descending ? query.OrderByDescending(item => item.Id) : query.OrderBy(item => item.Id)
         };
 
-        return Ok(result.ToList());
+        return Ok(await query.ToListAsync(cancellationToken));
     }
 
     [HttpGet("{id:int}")]
-    public ActionResult<Spravka> GetById(int id)
+    public async Task<ActionResult<Spravka>> GetById(int id, CancellationToken cancellationToken)
     {
-        var spravka = ClinicData.Spravki.FirstOrDefault(item => item.Id == id);
+        var spravka = await db.Spravki.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
         return spravka is null ? NotFound() : Ok(spravka);
     }
 
     [HttpPost]
-    public ActionResult<Spravka> Create(SpravkaRequest request)
+    public async Task<ActionResult<Spravka>> Create(SpravkaRequest request, CancellationToken cancellationToken)
     {
-        var patient = ClinicData.Patients.FirstOrDefault(item => item.Id == request.PatientId);
-        if (patient is null)
-            return BadRequest(new { message = $"Пациент с Id {request.PatientId} не найден." });
+        var now = DateTime.Now;
+        var issuedAt = request.IssuedAt ?? now;
+        var spravka = new Spravka();
+        var validationError = await SetSpravkaFields(spravka, request, issuedAt, now, cancellationToken);
+        if (validationError is not null)
+            return validationError;
 
-        var type = ClinicData.SpravkaTypes.FirstOrDefault(item => item.Id == request.SpravkaTypeId);
-        if (type is null)
-            return BadRequest(new { message = $"Вид справки с Id {request.SpravkaTypeId} не найден." });
+        db.Spravki.Add(spravka);
+        var saveError = await SaveSpravka(request, cancellationToken);
+        if (saveError is not null)
+            return saveError;
 
-        var issuedAt = request.IssuedAt ?? DateTime.Now;
-        if (issuedAt > DateTime.Now)
-            return BadRequest(new { message = "Дата выдачи не может находиться в будущем." });
-
-        var spravka = new Spravka
-        {
-            Id = ClinicData.NextSpravkaId(),
-            PatientId = patient.Id,
-            SpravkaTypeId = type.Id,
-            Name = type.Name,
-            Price = type.Price,
-            IssuedAt = issuedAt
-        };
-        ClinicData.Spravki.Add(spravka);
         return CreatedAtAction(nameof(GetById), new { id = spravka.Id }, spravka);
     }
 
     [HttpPut("{id:int}")]
-    public ActionResult<Spravka> Update(int id, SpravkaRequest request)
+    public async Task<ActionResult<Spravka>> Update(int id, SpravkaRequest request, CancellationToken cancellationToken)
     {
-        var spravka = ClinicData.Spravki.FirstOrDefault(item => item.Id == id);
+        var spravka = await db.Spravki.FindAsync([id], cancellationToken);
         if (spravka is null)
             return NotFound(new { message = $"Справка с Id {id} не найдена." });
-        var patient = ClinicData.Patients.FirstOrDefault(item => item.Id == request.PatientId);
-        if (patient is null)
-            return BadRequest(new { message = $"Пациент с Id {request.PatientId} не найден." });
-        var type = ClinicData.SpravkaTypes.FirstOrDefault(item => item.Id == request.SpravkaTypeId);
-        if (type is null)
-            return BadRequest(new { message = $"Вид справки с Id {request.SpravkaTypeId} не найден." });
 
-        var issuedAt = request.IssuedAt ?? spravka.IssuedAt;
-        if (issuedAt > DateTime.Now)
-            return BadRequest(new { message = "Дата выдачи не может находиться в будущем." });
+        var issuedAt = request.IssuedAt ?? spravka.IssuedAt.ToDateTime(TimeOnly.MinValue);
+        var validationError = await SetSpravkaFields(spravka, request, issuedAt, DateTime.Now, cancellationToken);
+        if (validationError is not null)
+            return validationError;
 
-        spravka.PatientId = patient.Id;
-        spravka.SpravkaTypeId = type.Id;
-        spravka.Name = type.Name;
-        spravka.Price = type.Price;
-        spravka.IssuedAt = issuedAt;
+        try
+        {
+            var saveError = await SaveSpravka(request, cancellationToken);
+            if (saveError is not null)
+                return saveError;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return NotFound(new { message = $"Справка с Id {id} не найдена." });
+        }
+
         return Ok(spravka);
     }
 
     [HttpDelete("{id:int}")]
-    public IActionResult Delete(int id)
+    public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
-        var spravka = ClinicData.Spravki.FirstOrDefault(item => item.Id == id);
-        if (spravka is null)
-            return NotFound(new { message = $"Справка с Id {id} не найдена." });
+        var affectedRows = await db.Spravki.Where(item => item.Id == id).ExecuteDeleteAsync(cancellationToken);
+        return affectedRows == 0 ? NotFound(new { message = $"Справка с Id {id} не найдена." }) : NoContent();
+    }
 
-        ClinicData.Spravki.Remove(spravka);
-        return NoContent();
+    private async Task<BadRequestObjectResult?> SetSpravkaFields(
+        Spravka spravka, SpravkaRequest request, DateTime issuedAt, DateTime now, CancellationToken cancellationToken)
+    {
+        if (!await db.Patients.AnyAsync(item => item.Id == request.PatientId, cancellationToken))
+            return BadRequest(new { message = $"Пациент с Id {request.PatientId} не найден." });
+
+        var type = await db.SpravkaTypes.AsNoTracking().FirstOrDefaultAsync(
+            item => item.Id == request.SpravkaTypeId, cancellationToken);
+        if (type is null)
+            return BadRequest(new { message = $"Вид справки с Id {request.SpravkaTypeId} не найден." });
+        if (issuedAt > now)
+            return BadRequest(new { message = "Дата выдачи не может находиться в будущем." });
+
+        spravka.PatientId = request.PatientId;
+        spravka.SpravkaTypeId = type.Id;
+        spravka.Name = type.Name;
+        spravka.Price = type.Price;
+        spravka.IssuedAt = DateOnly.FromDateTime(issuedAt);
+        return null;
+    }
+
+    private async Task<BadRequestObjectResult?> SaveSpravka(SpravkaRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            return null;
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+            { SqlState: PostgresErrorCodes.ForeignKeyViolation, ConstraintName: "FK_Spravki_Patients_PatientId" })
+        {
+            return BadRequest(new { message = $"Пациент с Id {request.PatientId} не найден." });
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+            { SqlState: PostgresErrorCodes.ForeignKeyViolation, ConstraintName: "FK_Spravki_SpravkaTypes_SpravkaTypeId" })
+        {
+            return BadRequest(new { message = $"Вид справки с Id {request.SpravkaTypeId} не найден." });
+        }
     }
 }
