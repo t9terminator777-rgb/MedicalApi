@@ -7,7 +7,7 @@ namespace MedicalApi.Controllers;
 // Дополнительный модуль клиники: запись пациента на приём к врачу.
 [ApiController]
 [Route("api/[controller]")]
-public class AppointmentsController : ControllerBase
+public class AppointmentsController(MedicalDbContext db) : ControllerBase
 {
     [HttpGet]
     public ActionResult<IEnumerable<Appointment>> GetAll([FromQuery] int? patientId)
@@ -73,9 +73,9 @@ public class AppointmentsController : ControllerBase
         return NoContent();
     }
 
-    private static string? ValidateRequest(AppointmentRequest request)
+    private string? ValidateRequest(AppointmentRequest request)
     {
-        if (!ClinicData.Patients.Any(item => item.Id == request.PatientId))
+        if (!db.Patients.Any(item => item.Id == request.PatientId))
             return $"Пациент с Id {request.PatientId} не найден.";
         if (request.ScheduledAt == default || request.ScheduledAt < DateTime.Now)
             return "Укажите дату и время приёма в будущем.";

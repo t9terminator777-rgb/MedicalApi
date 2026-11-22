@@ -6,7 +6,7 @@ namespace MedicalApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class SpravkiController : ControllerBase
+public class SpravkiController(MedicalDbContext db) : ControllerBase
 {
     // Можно отфильтровать по пациенту или части названия и отсортировать по цене/дате.
     [HttpGet]
@@ -43,7 +43,7 @@ public class SpravkiController : ControllerBase
     [HttpPost]
     public ActionResult<Spravka> Create(SpravkaRequest request)
     {
-        var patient = ClinicData.Patients.FirstOrDefault(item => item.Id == request.PatientId);
+        var patient = db.Patients.FirstOrDefault(item => item.Id == request.PatientId);
         if (patient is null)
             return BadRequest(new { message = $"Пациент с Id {request.PatientId} не найден." });
 
@@ -74,7 +74,7 @@ public class SpravkiController : ControllerBase
         var spravka = ClinicData.Spravki.FirstOrDefault(item => item.Id == id);
         if (spravka is null)
             return NotFound(new { message = $"Справка с Id {id} не найдена." });
-        var patient = ClinicData.Patients.FirstOrDefault(item => item.Id == request.PatientId);
+        var patient = db.Patients.FirstOrDefault(item => item.Id == request.PatientId);
         if (patient is null)
             return BadRequest(new { message = $"Пациент с Id {request.PatientId} не найден." });
         var type = ClinicData.SpravkaTypes.FirstOrDefault(item => item.Id == request.SpravkaTypeId);

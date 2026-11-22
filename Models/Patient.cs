@@ -6,6 +6,8 @@ public class Patient
 {
     public int Id { get; set; }
 
+    public string? Pin { get; set; }
+
     [Required(ErrorMessage = "Укажите имя пациента.")]
     [StringLength(100, MinimumLength = 2, ErrorMessage = "Имя должно содержать от 2 до 100 символов.")]
     public string Name { get; set; } = string.Empty;
